@@ -1,0 +1,49 @@
+{
+    "order_uid": "d563feb7b2b84b6test",
+    "track_number": "TRACK003",
+    "entry": "WBIL",
+    "delivery": {
+      "name": "Charlie Brown",
+      "phone": "+111222333",
+      "zip": "30003",
+      "city": "Chicago",
+      "address": "Michigan Ave 15",
+      "region": "IL",
+      "email": "charlie@example.com"
+    },
+    "payment": {
+      "transaction": "txn-003",
+      "request_id": "",
+      "currency": "USD",
+      "provider": "paypal",
+      "amount": 999,
+      "payment_dt": 1637907727,
+      "bank": "paypal",
+      "delivery_cost": 50,
+      "goods_total": 949,
+      "custom_fee": 0
+    },
+    "items": [
+      {
+        "chrt_id": 1003,
+        "track_number": "TRACK003",
+        "price": 949,
+        "rid": "rid-003",
+        "name": "Gaming Keyboard",
+        "sale": 5,
+        "size": "XL",
+        "total_price": 949,
+        "nm_id": 5003,
+        "brand": "KeyPro",
+        "status": 200
+      }
+    ],
+    "locale": "en",
+    "internal_signature": "",
+    "customer_id": "charlie03",
+    "delivery_service": "ups",
+    "shardkey": "3",
+    "sm_id": 3,
+    "date_created": "2025-08-27T00:20:00Z",
+    "oof_shard": "3"
+  }
