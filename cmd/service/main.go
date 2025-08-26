@@ -22,6 +22,7 @@ import (
 	"demo/orders/internal/store"
 )
 
+//go:embed web/*
 var webFS embed.FS
 
 type Cache struct {
