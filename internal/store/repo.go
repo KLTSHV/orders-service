@@ -11,6 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+type Repository interface {
+	UpsertOrder(ctx context.Context, o model.Order) error
+	GetOrder(ctx context.Context, orderUID string) (model.Order, bool, error)
+	LoadAllOrders(ctx context.Context) ([]model.Order, error)
+}
 type Repo struct {
 	Pool PgxIface
 }
@@ -94,8 +99,8 @@ func (r *Repo) GetOrder(ctx context.Context, orderUID string) (model.Order, bool
 		       d.name, d.phone, d.zip, d.city, d.address, d.region, d.email,
 		       p.transaction, p.request_id, p.currency, p.provider, p.amount, p.payment_dt, p.bank, p.delivery_cost, p.goods_total, p.custom_fee
 		FROM orders o
-		JOIN deliveries d ON d.order_uid = o.order_uid
-		JOIN payments  p ON p.order_uid = o.order_uid
+		LEFT JOIN deliveries d ON d.order_uid = o.order_uid
+		LEFT JOIN payments  p ON p.order_uid = o.order_uid
 		WHERE o.order_uid=$1`, orderUID)
 
 	var payTime time.Time
@@ -123,6 +128,9 @@ func (r *Repo) GetOrder(ctx context.Context, orderUID string) (model.Order, bool
 		}
 		o.Items = append(o.Items, it)
 	}
+	if err := rows.Err(); err != nil {
+		return model.Order{}, false, err
+	}
 	return o, true, nil
 }
 
@@ -135,13 +143,22 @@ func (r *Repo) LoadAllOrders(ctx context.Context) ([]model.Order, error) {
 	var ids []string
 	for rows.Next() {
 		var id string
-		_ = rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	out := make([]model.Order, 0, len(ids))
 	for _, id := range ids {
-		if o, ok, err := r.GetOrder(ctx, id); err == nil && ok {
+		o, ok, err := r.GetOrder(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			out = append(out, o)
 		}
 	}

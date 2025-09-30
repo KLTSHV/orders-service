@@ -8,13 +8,19 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/brianvoe/gofakeit/v7"
 	"github.com/segmentio/kafka-go"
+
+	"demo/orders/internal/model"
 )
 
 func main() {
+	gofakeit.Seed(time.Now().UnixNano())
+
 	brokers := splitCSV(env("KAFKA_BROKERS", "localhost:9094"))
 	topic := env("KAFKA_TOPIC", "orders")
 	glob := env("DATA_GLOB", "data/*.json")
@@ -26,42 +32,32 @@ func main() {
 		Balancer:     &kafka.Hash{},
 		RequiredAcks: kafka.RequireAll,
 	}
-	defer w.Close()
 
-	paths, _ := filepath.Glob(glob)
+	defer func() {
+		if err := w.Close(); err != nil {
+			log.Printf("close writer: %v", err)
+		}
+	}()
 
-	// Если файлов нет, отправим тестовый заказ
+	paths, err := filepath.Glob(glob)
+	if err != nil {
+		log.Fatalf("glob %s: %v", glob, err)
+	}
+
+	// ФОЛЛБЭК: если файлов нет — генерим N заказов
 	if len(paths) == 0 {
-		msg := map[string]any{
-			"order_uid":    "b563feb7b2b84b6test",
-			"track_number": "WBILMTESTTRACK",
-			"entry":        "WBIL",
-			"delivery": map[string]any{
-				"name": "Test Testov", "phone": "+9720000000", "zip": "2639809", "city": "Kiryat Mozkin", "address": "Ploshad Mira 15", "region": "Kraiot", "email": "test@gmail.com",
-			},
-			"payment": map[string]any{
-				"transaction": "b563feb7b2b84b6test", "request_id": "", "currency": "USD", "provider": "wbpay",
-				"amount": 1817, "payment_dt": 1637907727, "bank": "alpha", "delivery_cost": 1500, "goods_total": 317, "custom_fee": 0,
-			},
-			"items": []map[string]any{{
-				"chrt_id": 9934930, "track_number": "WBILMTESTTRACK", "price": 453, "rid": "ab4219087a764ae0btest",
-				"name": "Mascaras", "sale": 30, "size": "0", "total_price": 317, "nm_id": 2389212, "brand": "Vivienne Sabo", "status": 202,
-			}},
-			"locale": "en", "internal_signature": "", "customer_id": "test", "delivery_service": "meest", "shardkey": "9", "sm_id": 99,
-			"date_created": "2021-11-26T06:22:19Z", "oof_shard": "1",
+		n := mustInt("1", os.Getenv("GEN_COUNT"))
+		gap := mustInt("0", os.Getenv("GEN_INTERVAL_MS")) // мс
+		for i := 0; i < n; i++ {
+			o := fakeOrder()
+			if _, err := sendOrder(context.Background(), w, o, "generated"); err != nil {
+				log.Fatalf("produce: %v", err)
+			}
+			if gap > 0 {
+				time.Sleep(time.Duration(gap) * time.Millisecond)
+			}
 		}
-		b, _ := json.Marshal(msg)
-		if err := w.WriteMessages(context.Background(), kafka.Message{
-			Key:   []byte("b563feb7b2b84b6test"),
-			Value: b,
-			Time:  time.Now(),
-			Headers: []kafka.Header{
-				{Key: "content-type", Value: []byte("application/json")},
-			},
-		}); err != nil {
-			log.Fatalf("produce: %v", err)
-		}
-		log.Println("produced 1 message (fallback)")
+		log.Printf("produced %d generated message(s)", n)
 		return
 	}
 
@@ -77,18 +73,85 @@ func main() {
 	log.Printf("done: produced=%d from %d files", total, len(paths))
 }
 
+func fakeOrder() model.Order {
+	return model.Order{
+		OrderUID:    gofakeit.UUID(),
+		TrackNumber: strings.ToUpper(gofakeit.LetterN(4) + gofakeit.DigitN(6)),
+		Entry:       "WBIL",
+		Delivery: model.Delivery{
+			Name:    gofakeit.Name(),
+			Phone:   gofakeit.Phone(),
+			Zip:     gofakeit.Zip(),
+			City:    gofakeit.City(),
+			Address: gofakeit.Street(),
+			Region:  gofakeit.State(),
+			Email:   gofakeit.Email(),
+		},
+		Payment: model.Payment{
+			Transaction:  gofakeit.UUID(),
+			Currency:     "USD",
+			Provider:     "wbpay",
+			Amount:       gofakeit.Number(100, 100000),
+			PaymentDT:    time.Now().Unix(),
+			Bank:         "alpha",
+			DeliveryCost: 500,
+			GoodsTotal:   200,
+			CustomFee:    0,
+		},
+		Items: []model.Item{{
+			ChrtID:      int64(gofakeit.Number(1000, 999999)),
+			TrackNumber: "WB" + strings.ToUpper(gofakeit.LetterN(2)+gofakeit.DigitN(6)),
+			Price:       gofakeit.Number(10, 10000),
+			RID:         gofakeit.UUID(),
+			Name:        gofakeit.ProductName(),
+			Sale:        gofakeit.Number(0, 90),
+			Size:        "M",
+			TotalPrice:  gofakeit.Number(10, 10000),
+			NmID:        int64(gofakeit.Number(1000, 999999)),
+			Brand:       gofakeit.Company(),
+			Status:      200,
+		}},
+		Locale:      "en",
+		CustomerID:  gofakeit.Username(),
+		DateCreated: time.Now().UTC(),
+	}
+}
+
+func sendOrder(ctx context.Context, w *kafka.Writer, o model.Order, source string) (int, error) {
+	val, merr := json.Marshal(o)
+	if merr != nil {
+		return 0, fmt.Errorf("marshal order: %w", merr)
+	}
+	err := w.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(o.OrderUID),
+		Value: val,
+		Time:  time.Now(),
+		Headers: []kafka.Header{
+			{Key: "content-type", Value: []byte("application/json")},
+			{Key: "source", Value: []byte(source)},
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	log.Printf("produced key=%s src=%s", o.OrderUID, source)
+	return 1, nil
+}
+
 func produceFile(ctx context.Context, w *kafka.Writer, path string) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, fmt.Errorf("open: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("close %s: %v", path, err)
+		}
+	}()
 	b, err := io.ReadAll(f)
 	if err != nil {
 		return 0, fmt.Errorf("read: %w", err)
 	}
-
-	// поддерживаем и один объект, и массив объектов
 	var one map[string]any
 	if err := json.Unmarshal(b, &one); err == nil && len(one) > 0 {
 		return sendOne(ctx, w, one, filepath.Base(path))
@@ -97,7 +160,11 @@ func produceFile(ctx context.Context, w *kafka.Writer, path string) (int, error)
 	if err := json.Unmarshal(b, &many); err == nil && len(many) > 0 {
 		sum := 0
 		for _, obj := range many {
-			n, _ := sendOne(ctx, w, obj, filepath.Base(path))
+			n, err := sendOne(ctx, w, obj, filepath.Base(path))
+			if err != nil {
+				log.Printf("produce: %v", err)
+				continue
+			}
 			sum += n
 		}
 		return sum, nil
@@ -110,7 +177,10 @@ func sendOne(ctx context.Context, w *kafka.Writer, obj map[string]any, source st
 	if v, ok := obj["order_uid"].(string); ok && v != "" {
 		key = v
 	}
-	val, _ := json.Marshal(obj)
+	val, merr := json.Marshal(obj)
+	if merr != nil {
+		return 0, fmt.Errorf("marshal order: %w", merr)
+	}
 	err := w.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(key),
 		Value: val,
@@ -132,6 +202,16 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+func mustInt(def string, s string) int {
+	if s == "" {
+		s = def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 func splitCSV(s string) []string {
 	ps := strings.Split(s, ",")
